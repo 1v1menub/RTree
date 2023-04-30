@@ -1,4 +1,4 @@
-/* #include <SDL2/SDL.h> */
+//#include <SDL2/SDL.h>
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -9,7 +9,7 @@
 #include <ctime>
 
 const int M = 3;
-const int m = 2; // m <= M/2
+const int m = 2; // m <= (M/2)techo
 const double EPS = 1e-9;
 const int NUM_DIMENSIONS = 2;
 
@@ -41,6 +41,7 @@ struct MBB {
         }
     }
 
+    // Calcula el area necesaria para que el punto se encuentre contenido en el MBB
     double expansion_needed(const Point& p) const {
         double expansion = 0;
         for (int d = 0; d < NUM_DIMENSIONS; d++) {
@@ -50,6 +51,7 @@ struct MBB {
         return expansion;
     }
 
+    // Permite expandir el MBB para que contenga al punto
     void expand(const Point& p) {
         for (int d = 0; d < NUM_DIMENSIONS; d++) {
             lower.coords[d] = std::min(lower.coords[d], p.coords[d]);
@@ -57,6 +59,7 @@ struct MBB {
         }
     }
 
+    // Calcula el area del MBB
     double area() const {
         double area = 1;
         for (int d = 0; d < NUM_DIMENSIONS; d++) {
@@ -66,7 +69,7 @@ struct MBB {
     }
 };
 
-
+// Distancia al cuadrado en todas las dimensiones => sirve para luego sacar pitagoras
 static double point_distance_squared(const Point& p1, const Point& p2) {
     double distance_squared = 0;
     for (int d = 0; d < NUM_DIMENSIONS; d++) {
@@ -76,6 +79,7 @@ static double point_distance_squared(const Point& p1, const Point& p2) {
     return distance_squared;
 }
 
+// Distancia entre dos puntos => pitagoras
 static double point_distance(const Point& p1, const Point& p2) {
     return std::sqrt(point_distance_squared(p1, p2));
 }
@@ -88,7 +92,7 @@ public:
     const MBB& mbb() const { return mbb_; }
     const std::vector<Point>& points() const { return points_; }
     const std::vector<std::shared_ptr<RTreeNode>>& children() const { return children_; }
-
+    std::shared_ptr<RTreeNode> parent_node() const { return parent; }
     void insert(const Point& p);
     
     static SplitType split_type;
@@ -98,31 +102,35 @@ private:
     MBB mbb_;
     std::vector<Point> points_;
     std::vector<std::shared_ptr<RTreeNode>> children_;
-    RTreeNode* parent_;
+    std::shared_ptr<RTreeNode> parent;
 
     void split();
     void linear_split();
     void quadratic_split();
     void brownie_split();
     std::shared_ptr<RTreeNode> choose_subtree(const Point& p) const;
-    /* double compute_overlap(const MBB& mbb1, const MBB& mbb2) const; */
+    double compute_overlap(const MBB& mbb1, const MBB& mbb2) const;
 };
 
 RTreeNode::RTreeNode(bool is_leaf) : is_leaf_(is_leaf) {
     if (is_leaf) {
         mbb_ = MBB();
     }
+    parent = nullptr;
 }
 
 void RTreeNode::insert(const Point& p) {
     if (is_leaf_) {
+        // If the current node is a leaf, insert the point
         points_.push_back(p);
         mbb_.expand(p);
 
         // Check if the node overflows
         if (points_.size() > M) {
+            // Split the node
             split();
         }
+
     } else {
         // If the current node is not a leaf, choose the best subtree to insert the point
         std::shared_ptr<RTreeNode> subtree = choose_subtree(p);
@@ -134,17 +142,22 @@ void RTreeNode::insert(const Point& p) {
 std::shared_ptr<RTreeNode> RTreeNode::choose_subtree(const Point& p) const {
     std::shared_ptr<RTreeNode> best_child;
     double min_expansion = std::numeric_limits<double>::max();
-    
-    for(auto i : this->children_) {
-        double expand = i->mbb_.expansion_needed(p);
-        if(expand < min_expansion) {
-            min_expansion = expand;
-            best_child = i;
-        }
-        else if(expand == min_expansion){
 
+    // Recorremos todos los hijos para escoger el que tenga menor expansion
+    for (const std::shared_ptr<RTreeNode>& child : children_) {
+        double expansion = child->mbb().expansion_needed(p);
+        if (expansion < min_expansion) {
+            min_expansion = expansion;
+            best_child = child;
+        } else if (expansion == min_expansion) {
+            // En caso de empate, escogemos el hijo con menor area
+            double area = child->mbb().area();
+            if (area < best_child->mbb().area()) {
+                best_child = child;
+            }
         }
     }
+
     return best_child;
 }
 
@@ -167,93 +180,130 @@ void RTreeNode::split() {
 SplitType RTreeNode::split_type;
 
 void RTreeNode::linear_split() {
-    // -------
-    // Tu codigo aqui
-    // -------
-
+    // Referencia a este mismo nodo
     std::shared_ptr<RTreeNode> thisptr = std::make_shared<RTreeNode>(this);
-    if(this->is_leaf_) {
-        Point initialp = this->points_[0];
-        double bestdistance = -1000;
-        int firstp;
-        int lastp;
-        Point p1;
-        Point p2;
-        for(int i = 0; i < this->points_.size(); i++) {
-            double dist = point_distance(initialp, this->points_[i]);
-            if(dist > bestdistance) {
-                firstp = i;
-                bestdistance = dist;
+
+    if (this->is_leaf_) {
+        // Crear un nuevo nodo hermano
+        std::shared_ptr<RTreeNode> brother = std::make_shared<RTreeNode>(true);
+        
+        // Verificamos si existe padre
+        if(this->parent) {
+            parent = this->parent;
+        } else{
+            // Si no existe padre, creamos uno
+            this->parent = std::make_shared<RTreeNode>(false);
+        }
+
+        // Asignamos el padre al nodo hermano
+        brother->parent = this->parent;
+
+        // Escoger los dos puntos más alejados entre sí
+        double max_distance = 0;
+        Point p1, p2;
+        for (size_t i = 0; i < points_.size(); i++) {
+            for (size_t j = i + 1; j < points_.size(); j++) {
+                double distance = point_distance(points_[i], points_[j]);
+                if (distance > max_distance) {
+                    max_distance = distance;
+                    p1 = points_[i];
+                    p2 = points_[j];
+                }
             }
         }
-        p1 = points_[firstp];
-        this->points_.erase(points_.begin() + firstp);
-        bestdistance = 0;
-        for(int i = 0; i < this->points_.size(); i++) {
-            double dist = point_distance(this->points_[firstp], this->points_[i]);
-            if(dist > bestdistance) {
-                lastp = i;
-                bestdistance = dist;
-            }
-        }
-        p2 = points_[lastp];
-        this->points_.erase(points_.begin() + lastp);
 
-
-        std::vector<Point> puntos = this->points_;
+        // Creamos un vector de puntos temporal
+        std::vector<Point> tempPoints = this->points_;
+        // Limpiamos todos los puntos del nodo actual
         this->points_.clear();
 
-        RTreeNode* parent;
-        if(this->parent_) {
-            parent = this->parent_;
-        }
-        std::shared_ptr<RTreeNode> sibling;
-
+        // Asignamos los puntos mas alejados a cada nodo
         this->insert(p1);
-        sibling->insert(p2);
+        brother->insert(p2);
 
-        this->parent_ = parent;
-        sibling->parent_ = parent;
-
+        // Asignamos los hijos al nuevo padre
         parent->children_.push_back(thisptr);
-        parent->children_.push_back(sibling);
+        parent->children_.push_back(brother);
 
+        // Agregar los puntos restantes al nodo cuya MBB tenga menor expansión
+        for (const Point& p : tempPoints) {
+            // Si el punto es igual a alguno de los puntos mas alejados, lo saltamos
+            if (p.coords[0] == p1.coords[0] && p.coords[1] == p1.coords[1]) {
+                continue;
+            }
+            if (p.coords[0] == p2.coords[0] && p.coords[1] == p2.coords[1]) {
+                continue;
+            }
+            
+            double expansion1 = this->mbb().expansion_needed(p);
+            double expansion2 = brother->mbb().expansion_needed(p);
 
-        double ex1;
-        double ex2;
-        for(auto i : puntos) {
-            ex1 = this->mbb_.expansion_needed(i);
-            ex2 = sibling->mbb_.expansion_needed(i);
-            if(ex1 < ex2) {
-                this->insert(i);
-            }
-            else if(ex1 > ex2) {
-                sibling->insert(i);
-            }
-            else {
-                if(this->points_.size() < sibling->points_.size()) {
-                    this->insert(i);
-                }
-                else {
-                    sibling->insert(i);
+            if (expansion1 < expansion2) {
+                this->insert(p);
+            } else if (expansion2 < expansion1) {
+                brother->insert(p);
+            } else {
+                // En caso de empate, escogemos el hijo con menor area de expansion necesaria
+                double area1 = this->mbb().area();
+                double area2 = brother->mbb().area();
+                if (area1 < area2) {
+                    this->insert(p);
+                } else {
+                    brother->insert(p);
                 }
             }
-            this->is_leaf_ = false;
         }
-    }
-    else {
-        // IMEPLEMTNAR SPLIT PARA NODOS INTERNOS 
     }
 }
-
-
-
 
 void RTreeNode::quadratic_split(){
-    // -------
-    // Tu codigo aqui
-    // -------
+    // Se crean dos nodos hijos
+    std::shared_ptr<RTreeNode> node1 = std::make_shared<RTreeNode>(is_leaf_);
+    std::shared_ptr<RTreeNode> node2 = std::make_shared<RTreeNode>(is_leaf_);
+    
+    // Elegir los puntos que generan la mayor area entre sí
+    double max_area = 0;
+    Point p1, p2;
+    for (size_t i = 0; i < points_.size(); i++) {
+        for (size_t j = i + 1; j < points_.size(); j++) {
+            double area = point_distance(points_[i], points_[j]);
+            if (area > max_area) {
+                max_area = area;
+                p1 = points_[i];
+                p2 = points_[j];
+            }
+        }
+    }
+
+    node1->insert(p1);
+    node2->insert(p2);
+
+    // Agregar los puntos restantes al nodo cuya MBB tenga menor area
+
+    children_.push_back(node1);
+    children_.push_back(node2);
+
+    // Actualizar el MBB del nodo actual
+    mbb_ = MBB();
+
+    for (const Point& p : points_) {
+        mbb_.expand(p);
+    }
+
+    node1->mbb_ = MBB();
+    for (const Point& p : node1->points()) {
+        node1->mbb_.expand(p);
+    }
+
+    // Limpiar los puntos del nodo actual
+    points_.clear();
+
+    // Actualizar el nodo actual como nodo interno
+    is_leaf_ = false;
+
 }
+
+
 void RTreeNode::brownie_split(){
     // -------
     // Tu codigo aqui
@@ -265,7 +315,7 @@ class RTree {
 public:
     RTree(SplitType split_type = LINEAR_SPLIT);
     const RTreeNode* get_root() const { return root_.get(); }
-    /* void draw(const RTreeNode* node, SDL_Renderer* renderer) const; */
+    //void draw(const RTreeNode* node, SDL_Renderer* renderer) const;
     void print_ascii() const;
     void insert(const Point& p);
 
@@ -282,7 +332,7 @@ RTree::RTree(SplitType split_type) {
 void RTree::insert(const Point& p) {
     root_->insert(p);
 }
-/* 
+/*
 void RTree::draw(const RTreeNode* node, SDL_Renderer* renderer) const {
     if (node->is_leaf()) {
         SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
@@ -315,8 +365,8 @@ void RTree::draw(const RTreeNode* node, SDL_Renderer* renderer) const {
     for (const auto& child : node->children()) {
         draw(child.get(), renderer);
     }
-} */
-
+}
+*/
 void RTree::print_ascii() const {
     print_ascii_node(root_.get());
 }
@@ -363,12 +413,14 @@ int main() {
     rtree.insert(Point( 80,  80));
     rtree.insert(Point( 90,  90));
     rtree.insert(Point(100, 100));
+
+
     
     printf("Done\n");
 
     rtree.print_ascii();
-
-   /*  // Initialize SDL
+/*
+    // Initialize SDL
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
         std::cerr << "SDL initialization failed: " << SDL_GetError() << std::endl;
         return 1;
@@ -421,6 +473,6 @@ int main() {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
- */
+*/
     return 0;
 }
